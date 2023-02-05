@@ -1,0 +1,468 @@
+// Programa   : EPSONPF-NUM
+// Fecha/Hora : 05/03/2009 
+// Propósito  : OBTIENE EL NUMERO DE LA ULTIMA FACTURA O DEVOLUCION DE LA IMPRESORA
+// Aplicación : INVOCADO POR TDPOSSAVE Y TDPOS
+// Tipo       : 
+// Creado Por : LARRY BORGES - TECNODATOS, Código migrado desde DataPro DOS
+// Observación: USA COMUNICACION DIRECTA SISTEMA - ADAPTAPRO - EN MENU OTROS 
+
+#INCLUDE "dpxbase.ch"
+
+FUNCTION MAIN(lFac)
+  LOCAL cCampo1,cCampo2, cErrorNum:="", nVeces:=0
+  LOCAL STX, ETX, SEC, SEP, CNU, DC2, DC4, cComent:="Cargando..."
+  LOCAL POSSEP, cFecha, cHora, cParametro:=""
+  PRIVATE CAM1:="", CAM2:="", CAM3:="", CAM4:="", CAM5:="", CAM6:="", CAM7:=""
+  PRIVATE CAM8:="", CAM9:="", CAM10:="", CAM11:="", CAM12:="", cError:="Sin Errores Operativos"
+  PRIVATE EDO1:="", EDO2:="", EDO3:="", EDO4:="", cErrorNum:="", cPFNumFac:="00000000"
+  PRIVATE cPAQUETE:="", cData, cComando, nCharSec, cTiempo:=""
+
+  Local cTitle:=oDp:cImpFiscal, aX:=GetCoors( GetDesktopWindow() )
+  Local oDlg, oFont,oFont2
+  Default lFac := .T.
+
+  STX  := CHR(02)  // 0x02 = STX  CARACTER DE INICIO DE DATOS
+  ETX  := CHR(03)  // 0x03 = ETX  CARACTER DE FIN DE DATOS
+  SEP  := CHR(28)  // 0x1C = FS
+  NAK  := CHR(21)  // 0x15 = NAK  respuesta a (enviar a ) la impresora si no proceso el comando 
+  DC2  := CHR(18)  // 0x12 = DC2  Indicacion de esperar 
+  DC4  := CHR(20)  // 0x14 = DC4  Indicacion de esperar
+  CNU  := CHR(127) //      = ¦  CAMPO NO UTILIZADO
+  SEC  := ""
+  cData:= ""
+  nCharSec:=0
+
+  //  oDp:cImpFiscal:="EPSON" // Quitar este comentario
+
+  IF !("EPSON"$UPPE(oDp:cImpFiscal))
+     MensajeErr("Verifique que la Impresora Fiscal Configurada es: EPSON PF")
+     RETURN ""
+  ENDIF
+
+
+  EJECUTAR("EPSONPF-SEC")
+
+  IF VALTYPE(oDp:nEpsonSec) != "N"
+    MensajeErr("Control de Secuencia de Impresora Fiscal no Habilitado")
+    RETURN .F.
+  ENDIF
+
+
+  DEFINE FONT oFont  NAME "Tahoma"  SIZE 0,-12 BOLD
+  DEFINE FONT oFont2 NAME "Tahoma"  SIZE 0,-14 BOLD
+
+  DEFINE DIALOG oDlg TITLE cTitle  SIZE 230,60 COLOR NIL,oDp:nGris
+
+  oDp:cDescri:=cComent
+  oDlg:lHelpIcon:=.F.
+
+  @ 02,5 SAY "Consultando Impresora " FONT oFont2  COLOR NIL,oDp:nGris PIXEL
+  @ 15,2 SAY oDp:cDescri PROMPT "Estado: " FONT oFont;
+         SIZE 120,80 COLOR NIL,oDp:nGris PIXEL
+
+  ACTIVATE DIALOG oDlg CENTERED;
+    ON INIT (oDlg:Show(),SysWait(),PROCESA()) 
+
+RETURN cPFNumFac
+
+//********************************
+//
+FUNCTION PROCESA()
+LOCAL lSalir:=.F., nVeces , nValor
+LOCAL cCom:="COM1:", nBaudeRate:=9600, ndatabits:=8, cparity:="E", nstopbit:=1
+LOCAL cRead:=SPACE(4000), cBuffer   :=SPACE(65536)
+
+  IF !IsWorking()
+
+    IF !Init_Port( cCom, nBaudeRate , nDatabits , cParity , nStopbit , cBuffer  )
+       MSGALERT("No pudo abrir "+cCom)
+       lSeguir:=.F.
+       RETURN .F.
+    ENDIF
+
+    OutBufClr()                  // Limpia el Buffer de Salida
+ 
+   IF !IsWorking()
+      MSGALERT("Conexión con Impresora no fue Posible, Puerto Desconectado!")
+      UnInt_Port() // Cerrar
+      lSeguir:=.F.
+      RETURN .F.
+    ENDIF
+
+  ENDIF
+
+  lSeguir:=.T.
+
+  oDp:cDescri:SetText("Puerto Abierto.", .T.)
+ 
+  cComando   := CHR(56)  // 0x38 = 8   // Comando IF 
+  CAM1       := CHR(78)  // CHR(78)= N      // Estatus para obtener Nº de Ultima Factura (Las AF no tienen contador de devolucion)
+
+  IF ("PF" $ UPPE(oDp:cImpFiscal)) .AND. !lFac
+    CAM1     := CHR(84)  // CHR(84)= T     // Estatus para obtener Nº de ultima Devolucion (Solo serie PF)
+  ENDIF
+
+  cParametro := CAM1
+
+  EJECUTAR("EPSONPF-SEC")  // ACTUALIZA EL VALOR DE oDp:nEpsonSec
+
+  IF VALTYPE(oDp:nEpsonSec) != "N"
+    MensajeErr("Control de Secuencia de Impresora Fiscal no Habilitado")
+    RETURN .F.
+  ENDIF
+
+  nCharSec   := oDp:nEpsonSec
+  SEC        := CHR(nCharSec)    //  oDp:nEpsonSec
+  cPaquete   := STX + SEC + cComando+ SEP + CAM1 + ETX 
+  
+  nVeces:=1
+  lSalir:= ENVIARPF()
+  ANALIZA()
+ 
+  DO WHILE CAM4 != "00"  .AND. !("ERROR" $ CAM4)   // .AND. nVeces <= 5
+
+    // SI NO ES UN ERROR, EL STATUS SE PUEDE MANEJAR
+    lSalir:= RESUELVE(CAM4)
+    nVeces++
+   If lSalir
+     EXIT
+    ELSE
+     lSalir:=ENVIARPF()
+     ANALIZA()
+    ENDIF
+    IF nVeces > 5
+      MSGINFO("DEMASIADOS INTENTOS DE ACCEDER A LA IMPRESORA, REVISE E INTENTE","ATENCION: IMPRESORA NO DISPONIBLE")
+      cData:="ERROR"
+      EXIT
+    ENDIF
+  ENDDO 
+
+  UnInt_Port() // Cerrar el puerto
+
+  IF !("ERROR" $ cData)
+    IF cParametro = "N"
+       cPFNumFac:=CAM10
+      ELSE
+       cPFNumFac:=CAM8
+    ENDIF
+    
+   ELSE
+    cPFNumFac:="ERROR"
+    SHOW_ERR()
+  ENDIF
+  oDlg:End()
+
+
+// ACTIVAR PARA EFECTOS DE EVALUACION - DEPURACION
+/*
+IF cParametro = "N"
+   alert("Ultima Factura: "+cPFNumFac+"  Tiempo: "+cTiempo)
+ ELSE
+   alert("Ultima Devolucion: "+cPFNumFac+"  Tiempo: "+cTiempo)
+ENDIF
+*/
+
+RETURN 
+
+
+//***********************************
+//Funcion que se encarga de enviar y controlar la impresion
+
+FUNCTION ENVIARPF()
+//Funcion que se encarga de enviar y controlar la impresion
+ 
+LOCAL nCharSec,lEnvio,nVeces,nCarBuff:=0, nreenv:=0, nTime:=0, nVueltas:=1, cCharIn:=" "
+LOCAL lTimeOut, nTimeIni, nTimeEnd, nTimeOut, cResp:="",nPosSTX,nPosETX, cData2:="", nOutBuf:=0
+  cPaquete:=EJECUTAR("EPSONPF-HEX",cPaquete)  // CALCULA EL BCC Y LO AÑADE A cPaquete
+  
+  nTimeIni:=seconds()
+  lTimeOut:=.F.
+  nTimeOut:= 2       // Maximo de Segundos para esperar
+ 
+  xCONT:=0
+  lEnvio:=.T.
+  cData:=""
+  cResp:=left(cPaquete,4)    // en la respuesta deben venir los 1ros 4 caracteres del paquete
+
+  oDp:cDescri:SetText(cComent, .T.)  // Actualiza accion en la ventana
+  
+  IF !(IsWorking())
+     msginfo("Puerto COM Fuera de Línea","INFORMACION")
+     //oPfW:End()
+     //lSeguir:=.F.
+     RETURN .F.
+  ENDIF
+
+  lEnvio:= OUTCHR(cPaquete)  // OUTCHR retorna falso cuando transmite (aparentemente)
+
+  SysWait(0.1)
+  nVeces   := 0
+  nCarBuff := InbufSize()
+  //* 1ER CICLO ESPERANDO UNA RESPUESTA DE LA IMPRESORA
+  WHILE nCarBuff = 0  .AND. !lTimeOut         // .AND. nVeces < 90
+    oDp:cDescri:SetText("a. Esperando       "+Transform(Crono(nTimeIni),"99999.99"), .T.)  // Actualiza accion en la ventana
+    SysWait(0.1)
+    nCarBuff := InbufSize()
+    lTimeOut:= IF(Crono(nTimeIni) > nTimeOut,.T.,.F.)
+  ENDDO
+ 
+  WHILE  !lTimeOut       // nCarBuff > 0 .AND.
+    oDp:cDescri:SetText("b. Leyendo "+Transform(Crono(nTimeIni),"99999.99"), .T.)  // Actualiza accion en la ventana
+    cData:=cData + InChr(nCarBuff)
+
+    IF STX $ cData 
+      IF ETX $ cData
+         cData2:=STRTRAN(cData,DC2)
+         cData:=cData2
+      ELSE
+       oDp:cDescri:SetText("c.Leyendo ETX"+Transform(Crono(nTimeIni),"99999.99"), .T.)  // Actualiza accion en la ventana
+
+        SysWait(0.2)
+        nCarBuff := InbufSize()
+        lTimeOut:= IF(Crono(nTimeIni) > nTimeOut,.T.,.F.)
+        cData:=cData + InChr(nCarBuff)
+        cData2:=STRTRAN(cData,DC2)
+        cData:=cData2
+      ENDIF
+      nPosSTX:=AT(STX,cData)
+      nPosETX:=AT(ETX,cData)
+      cData:=SUBSTR(cData,nPosSTX,nPosETX)
+      CLPCOPY(cData)
+      EXIT
+    ELSE
+      IF DC2 $ cData
+        STRTRAN(cData,DC2,"")
+      ENDIF
+    ENDIF
+    SysWait(0.6)
+    nCarBuff := InbufSize()
+    lTimeOut:= IF(Crono(nTimeIni) > nTimeOut,.T.,.F.)
+  ENDDO
+
+  IF "ERROR" $ cData
+      MSGINFO("ERROR EN RESPUESTA DE LA IMPRESORA: ","INFORMACION")
+      //IF MSGNOYES("REINTETAR ULTIMO COMANDO ?","TOME UNA DECISION" )
+        
+      //ENDIF  
+      UnInt_Port() // Cerrar
+      RETURN .F.
+    ENDIF
+  
+
+  IF lTimeOut      //.and. cResp $ cData
+    MSGINFO("EL ULTIMO COMANDO DE LA IMPRESORA NO SE EJECUTO POR UN ERROR POR DEMORA DE RESPUESTA LA IMPRESORA","ATENCION")
+    //MSGNOYES("REINTETAR ULTIMO COMANDO ?","TOME UNA DECISION" )
+    //??? QUE HACER AQUI ??? PREGUNTAR SI SE DESEA REINTENTAR O CANCELAR
+    UnInt_Port() // Cerrar
+    // oPfW:End()
+    RETURN .F.
+  ENDIF
+
+
+  cTiempo:=STR(Crono(nTimeIni))
+  
+
+RETURN .T.
+
+
+//***********************************
+
+Function Analiza()
+  Local cRecibe
+  cRecibe := cDATA
+
+  IF !("ERROR" $ cData)
+//alert("sin error epsonpf-num")
+    POSSEP:=AT(SEP,cDATA)
+
+    cDATA :=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM1  :=LEFT(cDATA,POSSEP-1)
+
+    cDATA :=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM2  :=LEFT(cDATA,POSSEP-1)
+
+    cDATA :=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM3  :=LEFT(cDATA,POSSEP-1)
+
+    cDATA :=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM4  :=LEFT(cDATA,POSSEP-1)
+
+    cDATA :=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM5  :=LEFT(cDATA,POSSEP-1)
+  
+    cDATA :=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM6  :=LEFT(cDATA,POSSEP-1)
+    cFECHA:=RIGHT(CAM6,2)+"/"+SUBSTR(CAM6,3,2)+"/"+LEFT(CAM6,2)
+
+    cDATA :=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM7  :=LEFT(cDATA,POSSEP-1)
+    cHORA :=LEFT(CAM7,2)+":"+SUBSTR(CAM7,3,2)+":"+RIGHT(CAM7,2)
+
+    IF cParametro = "T"
+      cDATA :=SUBSTR(cDATA,POSSEP+1)
+      POSSEP:=AT(ETX,cDATA)   // EL ULTIMO TERMINA CON ETX 
+      CAM8  :=LEFT(cDATA,POSSEP-1)
+    ENDIF
+
+    IF cParametro = "N"
+
+      cDATA :=SUBSTR(cDATA,POSSEP+1)
+      POSSEP:=AT(SEP,cDATA)
+      CAM8  :=LEFT(cDATA,POSSEP-1)
+
+      cDATA :=SUBSTR(cDATA,POSSEP+1)
+      POSSEP:=AT(SEP,cDATA)
+      CAM9  :=LEFT(cDATA,POSSEP-1)
+ 
+      cDATA :=SUBSTR(cDATA,POSSEP+1)
+      POSSEP:=AT(SEP,cDATA)
+      CAM10 :=LEFT(cDATA,POSSEP-1)
+
+      cDATA :=SUBSTR(cDATA,POSSEP+1)
+      POSSEP:=AT(SEP,cDATA)
+      CAM11 :=LEFT(cDATA,POSSEP-1)
+  
+      cDATA :=SUBSTR(cDATA,POSSEP+1)
+      POSSEP:=AT(ETX,cDATA)   // EL ULTIMO TERMINA CON ETX 
+      CAM12 :=LEFT(cDATA,POSSEP-1)
+    ENDIF
+
+// ANALIZA RESULTADOS
+    IF CAM4="00"
+      EDO4:="Impresora Libre y Lista"
+    ENDIF
+    IF CAM4="01"
+      EDO4:="Comprobante Fiscal en Curso"
+    ENDIF 
+    IF CAM4="02"
+      EDO4:="Documento No Fiscal en Curso"
+    ENDIF
+    IF CAM4="04"
+      EDO4:="No Lista, Emitir Reporte Z"
+    ENDIF
+    IF CAM4="05"
+      EDO4:="Encabezado de Documento Fiscal impreso"
+    ENDIF
+    IF CAM4="08"
+      EDO4:="Cierre Z no Culminó. Aplicar Reset Impresora"
+    ENDIF
+    IF CAM4="10" .OR. CAM4="11" .OR. CAM4="12" .OR. CAM4="13" 
+      EDO4:="Error Crítico. Llame a Servicio Técnico ("+cam4+")"
+    ENDIF
+    IF CAM4="14"
+      EDO4:="Memoria Fiscal Agotada. Llame a Servicio Técnico"
+    ENDIF
+  ELSE
+    POSSEP:=AT(SEP,cDATA)
+
+    cDATA:=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM1:=LEFT(cDATA,POSSEP-1)
+    //
+    cDATA:=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM2:=LEFT(cDATA,POSSEP-1)
+    //
+    cDATA:=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(SEP,cDATA)
+    CAM3:=LEFT(cDATA,POSSEP-1)  // Numero de error
+    cErrorNum:=CAM3
+    nErrorNum:=VAL(cErrorNum)
+    cError:=Ejecutar("EPSONPF-STAT",CAM1,nErrorNum)
+    //
+    cDATA:=SUBSTR(cDATA,POSSEP+1)
+    POSSEP:=AT(ETX,cDATA)   // EL ULTIMO TERMINA CON ETX 
+    CAM4:=LEFT(cDATA,POSSEP-1)
+    EDO4:=CAM4+" VERIFICAR MAPA DE ERRORES"   // CAMPO CON PALABRA ERROR+NUMERO
+    //
+  ENDIF
+  cData:=cRecibe
+
+// RETURN cRecibe
+RETURN CAM4
+
+//*****************************************
+
+FUNCTION SHOW_ERR()
+  if !("-"$cData)
+    ALERT("ERROR No. "+EDO4+" En Impresora Fiscal")
+    ALERT(cError)
+  endif
+RETURN NIL
+
+//*********************************************
+//**
+
+FUNCTION RESUELVE(cEdoCAM4)
+LOCAL nEdoFiscal
+LOCAL lSeguir:=.F.
+
+DEFAULT cEdoCAM4:="99"
+
+  nEdoFiscal:=0
+
+  IF EMPTY(cEdoCAM4)
+    MSGINFO("CODIGO DESCONOCIDO, INTENTE DE NUEVO","ATENCION: IMPRESORA NO DISPONIBLE")
+    cData:="ERROR"
+    RETURN .T.
+  ENDIF
+  nEdoFiscal:=VAL(cEdoCAM4)
+
+  DO CASE
+      CASE nEdoFiscal = 0
+        lSeguir:=.F.
+      CASE nEdoFiscal = 4
+        MSGINFO("No se ha ejecutado el último Reporte Z, se ejecutará en este momento","NOTIFICACION")
+        EJECUTAR("EPSONPF-Z")
+        lSeguir:=.T.
+      CASE nEdoFiscal = 1
+        MSGINFO("Un Documeto Fiscal (Fac/Dev) está en pendiente, se anulará en este momento","NOTIFICACION")
+        EJECUTAR("EPSONPF-ANU")
+        lSeguir:=.T.
+      CASE nEdoFiscal = 2
+        MSGINFO("Un Documeto NO Fiscal está en curso, se cerrará en este momento","NOTIFICACION")
+        EJECUTAR("EPSONPF-CNF")
+        lSeguir:=.T.
+      CASE nEdoFiscal = 5
+        MSGINFO("Un Documeto Fiscal se inició, se anulará en este momento","NOTIFICACION")
+        EJECUTAR("EPSONPF-ANU")
+        lSeguir:=.T.
+      CASE nEdoFiscal = 8
+        MSGINFO("Impresora Bloqueada a la espera de un Reporte Z, se ejecutará en este momento","NOTIFICACION")
+        EJECUTAR("EPSONPF-Z")
+        lSeguir:=.T.
+      OTHERWISE
+        MSGINFO("La Impresora retorna un codigo de servicio: "+str(nEdoFiscal),"NOTIFICACION")
+        lSeguir:=.F.
+        MSGINFO("REVISE LA IMPRESORA E INTENTE ACCESAR DE NUEVO","ATENCION: IMPRESORA NO DISPONIBLE")
+    ENDCASE
+RETURN lSeguir
+
+//*************************************************
+// ESTA FUNCION RECIBE UN NUMERO BASADO EN LA FUNCION SECONDS()
+// Y RETORNA LA DIFERENCIA EN SEGUNDOS ENTRE ESTE NUMERO Y EL SECONDS() ACTUAL
+// USADA PARA CALCULAR TIEMPO
+
+FUNCTION Crono (nInicio)
+LOCAL nSegundos, nActual
+
+  nSegundos:=0.0
+  nActual:=Seconds()
+
+  IF nActual < nInicio 
+      nSegundos:= (86399 - Inicio) + nActual
+   ELSE
+    nSegundos := nActual - nInicio
+  ENDIF
+
+RETURN nSegundos
+
+//**************************************************
+//EOF

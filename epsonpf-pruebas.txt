@@ -1,0 +1,134 @@
+// Programa   : EPSONPF-CP
+// Fecha/Hora : 04/03/2009 12:06:35
+// Propósito  : CORTAR PAPEL - IMPRESORA EPSON FISCALES
+// Aplicación : AUXILIAR A OTROS PROGRAMAS / TAMBIEN COMO PROBADOR DE COMUNICACION
+// Tipo       : 
+// Creado Por : LARRY BORGES - TECNODATOS
+// Observación: USA COMUNICACION DIRECTA SISTEMA - IMPRESORA. NO USA PROGRAMAS DE TERCEROS.
+// CORTA EL PAPEL - SIRVE TAMBIEN PARA TERMINAR COMPROBANTE
+// FISCAL QUE SOLO SE IMPRESO EL ENCABEZADO
+
+#include "dpxbase.ch"
+
+PROCEDURE MAIN()
+  LOCAL cData,cNone,lComOk,nBit,nStop,nBaud,nCom,nBuffer
+  Local cCom:="COM1:", nBaudeRate:=9600, ndatabits:=8, cparity:="E", nstopbit:=1
+  Local cRead:=SPACE(4000), cBuffer   :=SPACE(65536),i,nBytes
+  LOCAL cCadena,lOk,eCAM1,eCAM2,eCAM3,eCAM4, xCOMANDO,STX, ETX, SEC, SEP, CNU, nCarBuff
+  LOCAL CAM1:="", CAM2:="", CAM3:="", CAM4:="", CAM5:="", CAM6:="", CAM7:="",cComando
+  LOCAL CAM8:="", CAM9:="", CAM10:="", CAM11:="", CAM12:="", CAM13:="",CAM14:="",CAM15:=""
+  LOCAL POSSEP,TECLA,CHARSEC,xCONT,ENVIO,xTIEMPO,xINISEC, cSubComando 
+  LOCAL xPAQUETE 
+
+  cData:=""
+  
+//Inicializando Privadas
+  STX  := CHR(02)  // 0x02 = STX  CARACTER DE INICIO DE DATOS
+  ETX  := CHR(03)  // 0x03 = ETX  CARACTER DE FIN DE DATOS
+  SEP  := CHR(28)  // 0x1C = ?  
+  NAK  := CHR(21)  // 0x15 = NAK  respuesta a (enviar a ) la impresora si no proceso el comando 
+  DC2  := CHR(18)  // 0x12 = DC2  Indicacion de esperar
+  DC4  := CHR(20)  // 0x14 = DC4  Indicacion de esperar
+  CNU  := CHR(127) //      = ¦  CAMPO NO UTILIZADO
+  SEC  := ""
+
+  //oDp:cImpFiscal:="EPSON"
+
+//? oDp:cImpFiscal
+
+
+  IF !("EPSON"$UPPE(oDp:cImpFiscal))
+     MensajeErr("Verifique que la Impresora Fiscal Configurada es 'EPSON'")
+     RETURN .F.
+  ENDIF
+  EJECUTAR("EPSONPF-SEC")
+
+  IF VALTYPE(oDp:nEpsonSec) != "N"
+    MensajeErr("Control de Secuencia de Impresora Fiscal no Habilitado")
+    RETURN .F.
+   ELSE
+   // ALERT("oDp:nEpsonSec = "+STR(oDp:nEpsonSec))
+  ENDIF
+
+  IF !Init_Port( cCom, nBaudeRate , nDatabits , cParity , nStopbit , cBuffer  )
+     MSGALERT("No pudo abrir "+cCom)
+     RETURN .T.
+  ENDIF
+  OutBufClr()                  // Limpia el Buffer de Salida
+  IF !IsWorking()
+     ALERT("Puerto Desconectado!")
+  ENDIF
+
+
+//** ABRE COMPROBANTE FISCAL**
+/*
+  xCOMANDO := CHR(64)  // 0x40 = "@"  // ABRIR COMPROBANTE FISCAL
+  SEC := CHR(33)   // Reservado para este comando
+  xPAQUETE := STX + SEC + xCOMANDO + SEP+CNU+SEP+CNU+SEP+CNU+SEP+CNU+;
+                                    SEP+CNU+SEP+CNU+SEP+CNU+SEP+CNU+ETX  // ABRE COMPROBANTE FISCAL
+
+*/
+//
+    CAM1:="PRODUCTO DE PRUEBA 2"
+    CAM2:="3000"  //CANTIDAD
+    CAM3:="2500"   //PRECIO
+    CAM4:="1200"
+    CAM5:="M"
+    CAM6:=CNU
+    CAM7:=CNU
+    CAM8:=CNU
+    XComando :=CHR(66)    // "B"  Ox42 IMPRIMIR ITEM EN COMBROBANTE FISCAL
+    SEC      := CHR(36)
+    XPaquete := STX + SEC + XCOMANDO + SEP + CAM1 + SEP + CAM2 + SEP + CAM3 + SEP +;
+                CAM4 + SEP + CAM5 + SEP + CAM6 + SEP + CAM7 + SEP + CAM8 + ETX
+
+
+//** CANCELAR (ANULACION) COMPROBANTE FISCAL EN CURSO **
+/*
+  xCOMANDO := CHR(68)  // 0x44 = "D"  // CANCELAR (ANULAR) COMPROBANTE FISCAL
+  cSubComando:="C"
+  SEC := CHR(35)   // Reservado para este comando
+  xPAQUETE := STX + SEC + xCOMANDO + SEP+CNU+SEP+CNU+SEP+cSubComando+SEP+CNU+ETX
+*/
+
+
+//** COMIENZA A PROCESAR
+  BCC      := ""
+  CHECKSUM := 0
+  XPAQUETE:=EJECUTAR("EPSONPF-HEX",xPaquete)  // CALCULA EL BCC Y LO AÑADE A xPAQUETE
+
+  xCONT:=0
+  ENVIO:=.F.
+
+  ENVIO:= OUTCHR(xPAQUETE)
+
+  IF !ENVIO
+
+    xINISEC:=SECONDS()
+    xTIEMPO:=0
+    WHILE InbufSize() < 8 .AND. xTIEMPO < 2    // DEMORA DE 2 SEGUNDO
+      //MENSAJE("Esperando respuesta de la Impresora... "+S(xTIEMPO,7,3)+" seg.")
+      xTIEMPO:=SECONDS()-xINISEC
+    ENDDO
+    WHILE !(CHR(03) $ cData) .AND. xTIEMPO < 2
+     //MENSAJE("Recibiendo datos de la Impresora... "+S(xTIEMPO,7,3)+" seg.")
+     nCarBuff:=InbufSize()
+     cData:=cData+InChr(nCarBuff)
+     IF CHR(03) $ cData 
+       EXIT
+     ENDIF
+     xTIEMPO:=SECONDS()-xINISEC
+    ENDDO
+    //ALERT(cDATA)
+    IF xTIEMPO >= 2 .OR. !(CHR(03) $ cData)
+      ALERT("ERROR ESPERANDO LECTURA DE LA IMPRESORA, IMPRESION TAL VEZ NO OCURRIO")
+      UnInt_Port() // Cerrar
+      RETURN
+    ENDIF
+  ELSE
+    ALERT("ERROR ESPERANDO ESCRIBIR A LA IMPRESORA, IMPRESION CANCELADA")
+    UnInt_Port() // Cerrar
+    RETURN
+  ENDIF
+  UnInt_Port() // Cerrar
+RETURN

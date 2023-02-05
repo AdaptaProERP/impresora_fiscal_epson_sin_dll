@@ -1,0 +1,215 @@
+// Programa   : EPSONPF-Z
+// Fecha/Hora : 07/03/2009 11:48:41
+// Propósito  : EMITIR REPORTE Z
+// Aplicación : IMPRESORAS FISCALES EPSON
+// Tipo       : INDEPENDIENTE
+// Creado Por : LARRY BORGES - TECNODATOS
+// Observación: 
+
+#include "dpxbase.ch"
+
+PROCEDURE MAIN()
+
+  LOCAL cCampo1,cCampo2, cErrorNum:="", nCharSec
+  LOCAL CAM1:="", CAM2:="", CAM3:="", CAM4:="", CAM5:="", CAM6:="", CAM7:="",cComando
+  LOCAL CAM8:="", CAM9:="", CAM10:="", CAM11:="", CAM12:="", cError:="Sin Errores Operativos"
+  LOCAL cPaquete:="", lSeguir:=.F., cData:="", cComent:="Cargando..."
+  LOCAL STX, ETX, SEC, SEP, CNU, NAK, DC2, DC4 
+  LOCAL EDO1:="", EDO2:="", EDO3:="", EDO4:="", nEdoFiscal
+  LOCAL cTitle:=oDp:cImpFiscal, aX:=GetCoors( GetDesktopWindow() )
+  LOCAL oFont,oFont2,Font3, oDlg
+
+
+//Inicializando
+  STX  := CHR(02)  // 0x02 = STX  CARACTER DE INICIO DE DATOS
+  ETX  := CHR(03)  // 0x03 = ETX  CARACTER DE FIN DE DATOS
+  SEP  := CHR(28)  // 0x1C = ?  
+  NAK  := CHR(21)  // 0x15 = NAK  respuesta a (enviar a ) la impresora si no proceso el comando 
+  DC2  := CHR(18)  // 0x12 = DC2  Indicacion de esperar
+  DC4  := CHR(20)  // 0x14 = DC4  Indicacion de esperar
+  CNU  := CHR(127) //      = ¦  CAMPO NO UTILIZADO
+  SEC  := ""
+
+  IF !("EPSON"$UPPE(oDp:cImpFiscal))
+     MensajeErr("Verifique que la Impresora Fiscal Configurada es 'EPSON PF'")
+     RETURN .F.
+  ENDIF
+
+  DEFINE FONT oFont NAME "Verdana"  SIZE 0,-12 BOLD
+  DEFINE FONT oFont2 NAME "Verdana"  SIZE 0,-14 BOLD
+
+  DEFINE DIALOG oDlg TITLE cTitle  SIZE 200,55 COLOR NIL,oDp:nGris
+ 
+  oDp:cDescri:=cComent
+  oDlg:lHelpIcon:=.F.
+
+  @ 02,5 SAY "Procesando Reporte Z" FONT oFont2  COLOR NIL,oDp:nGris PIXEL
+  @ 15,2 SAY oDp:cDescri PROMPT "Estado: " FONT oFont SIZE 120,80 COLOR NIL,oDp:nGris PIXEL
+
+  ACTIVATE DIALOG oDlg CENTERED;
+    ON INIT (oDlg:Show(),SysWait(),Procesa()) 
+
+RETURN
+//FIN DEL PROGRAMA
+
+//***********************************
+//EJECUCION INICIAL DEL PROGRAMA
+FUNCTION PROCESA()
+
+  //** REPORTE Z
+  cComando := CHR(57)  // 0x4B = 9   
+  CAM1     := CHR(90)  // CHR(90)= Z
+  CAM2     := CNU      // No Utilizado
+  cPaquete := STX + SEC + cComando + SEP + CAM1 + SEP +  CAM2 + ETX
+  
+  EJECUTAR("EPSONPF-SEC")
+  IF VALTYPE(oDp:nEpsonSec) != "N"
+    MensajeErr("Control de Secuencia de Impresora Fiscal no Habilitado")
+    RETURN .F.
+  ENDIF
+  nCharSec:=oDp:nEpsonSec
+  SEC      := CHR(nCharSec)
+
+  cPaquete := STX + SEC + cComando + SEP + CAM1 + ETX
+  lSeguir:=ENVIARPF()
+  oDlg:End()
+
+RETURN
+
+//***********************************
+//Funcion que se encarga de enviar y controlar la impresion
+FUNCTION ENVIARPF()
+  LOCAL lEnvio, nCarBuff:=0
+  LOCAL lTimeOut, nTimeOut, nTimeIni, cResp:=""
+  LOCAL cCom:="COM1:", nBaudeRate:=9600, ndatabits:=8, cparity:="E", nstopbit:=1
+  LOCAL cRead:=SPACE(4000), cBuffer   :=SPACE(65536)
+
+  cPaquete:=EJECUTAR("EPSONPF-HEX",cPaquete)  // CALCULA EL BCC Y LO AÑADE A cPaquete
+
+  WHILE .T.
+    nTimeIni:=seconds()
+    lTimeOut:=.F.
+    nTimeOut:= 15       // Maximo de Segundos para esperar
+     
+    lEnvio:=.T.
+    cData:=""
+    cResp:=left(cPaquete,4)    // en la respuesta deben venir los 1ros 4 caracteres del paquete
+
+    oDp:cDescri:SetText(cComent, .T.)  // Actualiza accion en la ventana
+
+    IF !IsWorking()
+      IF !Init_Port( cCom, nBaudeRate , nDatabits , cParity , nStopbit , cBuffer  )
+        MSGALERT("No pudo abrir "+cCom)
+        lSeguir:=.F.
+        RETURN .F.
+      ENDIF
+      OutBufClr()                  // Limpia el Buffer de Salida
+      IF !IsWorking()
+        UnInt_Port() // Cerrar
+        msginfo("Puerto COM Fuera de Línea","INFORMACION")
+        lSeguir:=.F.
+        RETURN .F.
+      ENDIF
+    ENDIF
+ 
+    lSeguir:=.T.
+    oDp:cDescri:SetText("Puerto Abierto.", .T.)
+ 
+    lEnvio:= OUTCHR(cPaquete)  // OUTCHR retorna falso cuando transmite (aparentemente)
+  
+    Cursorwait()
+    SysWait(0.4)
+  
+    nCarBuff := InbufSize()
+    //* 1ER CICLO ESPERANDO UNA RESPUESTA DE LA IMPRESORA
+    WHILE nCarBuff = 0  .AND. !lTimeOut        
+      oDp:cDescri:SetText("a. Esperando "+Transform(Crono(nTimeIni),"999.99"), .T.)  // Actualiza accion en la ventana
+      SysWait(0.05)
+      nCarBuff := InbufSize()
+      lTimeOut:= IF(Crono(nTimeIni) > nTimeOut,.T.,.F.)
+    ENDDO
+  
+    IF !lTimeOut
+      //* 2DO CICLO - VERIFICANDO SI ESPERAR O LEER EL BUFFER
+      WHILE  !lTimeOut .and. !(STX $ cData)
+        oDp:cDescri:SetText("b.Leyendo "+Transform(Crono(nTimeIni),"999.99"), .T.)  // Actualiza accion en la ventana
+        cData:=InChr(1)
+        IF cData = DC2 .OR. cData = DC4
+          // LA IMPRESORA ENVIA ESPERA POR ESTAR OCUPADA
+          cData:=""
+          oDp:cDescri:SetText("c. Esperando (DC2) "+Transform(Crono(nTimeIni),"999.99"), .T.)  // Actualiza accion en la ventana
+        ENDIF
+        IF cData = STX
+          //LA RESPUESTA LLEGO Y ESTA EN EL BUFFER
+          EXIT
+        ENDIF  
+        SYSWAIT(0.1)
+        lTimeOut:= IF(Crono(nTimeIni) > nTimeOut,.T.,.F.)
+      ENDDO
+    ENDIF
+
+    IF !lTimeOut .AND. (STX $ cData )
+      IF cData=STX
+        WHILE !lTimeOut .and. !(ETX $ cData)   
+          oDp:cDescri:SetText("d. Leyendo (ETX) "+Transform(Crono(nTimeIni),"999.99"), .T.)  // Actualiza accion en la ventana
+          nCarBuff:=InbufSize()
+          IF nCarBuff > 0
+            cData:=cData+InChr(nCarBuff)
+            IF ETX $ cData 
+              EXIT
+            ENDIF
+          ENDIF
+          SysWait(0.1)
+          lTimeOut:= IF(Crono(nTimeIni) > nTimeOut,.T.,.F.)
+        ENDDO
+      ENDIF
+    ENDIF
+
+    IF "ERROR" $ cData
+      MSGINFO("ERROR EN RESPUESTA DE LA IMPRESORA: ","INFORMACION")
+      IF MSGNOYES("REINTETAR ULTIMO COMANDO ?","TOME UNA DECISION" )
+         LOOP
+       ELSE 
+        UnInt_Port() // Cerrar
+        RETURN .F.
+      ENDIF  
+    ENDIF
+  
+    IF lTimeOut 
+      MSGINFO("EL ULTIMO COMANDO DE LA IMPRESORA NO SE EJECUTO POR UN ERROR POR DEMORA DE RESPUESTA LA IMPRESORA")
+      IF MSGYESNO("REINTETAR ULTIMO COMANDO ?","TOME UNA DECISION" )
+         LOOP 
+      ELSE
+        UnInt_Port() // Cerrar
+        RETURN .F.
+      ENDIF
+    ENDIF
+
+    UnInt_Port() // Cerrar
+
+    EXIT
+
+  ENDDO
+
+RETURN .T.
+
+//*************************************************
+// ESTA FUNCION RECIBE UN NUMERO BASADO EN LA FUNCION SECONDS()
+// Y RETORNA LA DIFERENCIA EN SEGUNDOS ENTRE ESTE NUMERO Y EL SECONDS() ACTUAL
+// USADA PARA CALCULAR TIEMPO
+
+FUNCTION Crono (nInicio)
+LOCAL nSegundos, nActual
+
+  nSegundos:=0.0
+  nActual:=Seconds()
+
+  IF nActual < nInicio 
+      nSegundos:= (86399 - Inicio) + nActual
+   ELSE
+    nSegundos := nActual - nInicio
+  ENDIF
+
+RETURN nSegundos
+
+//**************************************************
